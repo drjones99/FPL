@@ -93,7 +93,7 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	number_of_transfers = {w: so.expr_sum(transfer_out[p,w] for p in players) for w in gameweeks}
 	number_of_transfers[next_gw-1] = 1
 	transfer_diff = {w: number_of_transfers[w] - free_transfers[w] for w in gameweeks}
-	bench_weights = [0.05, 0.21, 0.05, 0.002]
+	bench_weights = [0.05, 0.20, 0.05, 0.002] # Change bench weights according to your preference
 
 
 	# Initial conditions
