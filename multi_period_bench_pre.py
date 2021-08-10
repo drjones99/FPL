@@ -16,6 +16,7 @@ def get_data():
 	elements_team = pd.merge(element_data, team_data, left_on='team', right_on='id')
 	review_data = pd.read_csv('../data/fplreview.csv')
 	review_data = review_data.fillna(0)
+	review_data.drop_duplicates(inplace=True, keep='first')
 	merged_data = pd.merge(elements_team, review_data, left_on=['name', 'web_name'], right_on=['Team', 'Name'])
 	merged_data.set_index(['id_x'], inplace=True)
 	next_gw = int(review_data.keys()[5].split('_')[0])
@@ -26,7 +27,7 @@ def get_data():
 
 	return {'merged_data': merged_data, 'team_data': team_data, 'type_data': type_data, 'next_gw': next_gw, 'initial_squad': initial_squad, 'itb': itb}
 
-def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0.84, no_transfer=False, ITBmult=0.2, FTmult=1.6):
+def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0.84, no_transfer=False, ITBmult=0.1, FTmult=1.6):
 	"""
 	Solves multi-objective FPL problem with transfers
 	Parameters
@@ -39,10 +40,10 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 		Type of objective "regular" or "decay"
 	decay_base: float
 		Base for the decay function
-    ITBmult: float
-        xPTs Multiplier for spare cash. Default sets £1m = 0.2 xPTs/wk - higher than this leads to GW1 hoarding too much cash
-    FTmult: float
-        xPTs multiplier for available free transfers. Default is 1FT = 1.6 xPTs/wk
+	ITBmult: float
+		xPTs Multiplier for spare cash. Default £1m=0.1 xPTs/wk. Note >0.2 leads to hoarding too much cash. Also constraint to limit ITB <2m 
+	FTmult: float
+		xPTs multiplier for available free transfers. Default is 1FT = 1.6 xPTs/wk
 	"""
 
 	# Data
@@ -79,7 +80,7 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	free_transfers = model.add_variables(gameweeks, name='ft', vartype=so.integer, lb=1, ub=2)
 	penalized_transfers = model.add_variables(gameweeks, name='pt', vartype=so.integer, lb=0)
 	aux = model.add_variables(gameweeks, name='aux', vartype=so.binary)
-	
+
 	# Dictionaries
 	lineup_type_count = {(t,w): so.expr_sum(lineup[p,w] for p in players if merged_data.loc[p, 'element_type'] == t) for t in element_types for w in gameweeks}
 	squad_type_count = {(t,w): so.expr_sum(squad[p,w] for p in players if merged_data.loc[p, 'element_type'] == t) for t in element_types for w in gameweeks}
@@ -88,12 +89,12 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	buy_price = (merged_data['BV']).to_dict()
 	sold_amount = {w: so.expr_sum(sell_price[p] * transfer_out[p,w] for p in players) for w in gameweeks}
 	bought_amount = {w: so.expr_sum(buy_price[p] * transfer_in[p,w] for p in players) for w in gameweeks}
-	points_player_week = {(p,w): merged_data.loc[p, f'{w}_Pts']	for p in players for w in gameweeks}
+	points_player_week = {(p,w): merged_data.loc[p, f'{w}_Pts'] for p in players for w in gameweeks}
 	squad_count = {w: so.expr_sum(squad[p, w] for p in players) for w in gameweeks}
 	number_of_transfers = {w: so.expr_sum(transfer_out[p,w] for p in players) for w in gameweeks}
 	number_of_transfers[next_gw-1] = 1
 	transfer_diff = {w: number_of_transfers[w] - free_transfers[w] for w in gameweeks}
-	bench_weights = [0.05, 0.20, 0.05, 0.002] # Change bench weights according to your preference
+	bench_weights = [0.05, 0.4, 0.1, 0.004] # Static - change to suit depending on how nailed your players are
 
 
 	# Initial conditions
@@ -114,7 +115,7 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	model.add_constraints((lineup_type_count[t,w] == [type_data.loc[t, 'squad_min_play'], type_data.loc[t, 'squad_max_play']] for t in element_types for w in gameweeks), name='valid_formation')
 	model.add_constraints((squad_type_count[t,w] == type_data.loc[t, 'squad_select'] for t in element_types for w in gameweeks), name='valid_squad')
 	model.add_constraints((so.expr_sum(squad[p,w] for p in players if merged_data.loc[p, 'name'] == t) <= 3 for t in teams for w in gameweeks), name='team_limit')
-	
+
 	## Bench constraints
 	model.add_constraints((bench[p,w,0] == 0 for p in players_no_gk for w in gameweeks), name='bench_0_for_gk')
 	model.add_constraints((so.expr_sum(bench[p,w,l] for p in players) == 1 for w in gameweeks for l in priority), name='single_bench_prio')
@@ -123,6 +124,8 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	## Transfer constraints
 	model.add_constraints((squad[p,w] == squad[p,w-1] + transfer_in[p,w] - transfer_out[p,w] for p in players for w in gameweeks), name='squad_transfer_rel')
 	model.add_constraints((in_the_bank[w] == in_the_bank[w-1] + sold_amount[w] - bought_amount[w] for w in gameweeks), name='cont_budget')
+	model.add_constraints((in_the_bank[w] <= 2 for w in gameweeks), name='itb_ub')
+
 	## Free transfer constraints
 	model.add_constraints((free_transfers[w] == aux[w] + 1 for w in gameweeks if w > 2), name='aux_ft_rel')
 	model.add_constraints((free_transfers[w-1] - number_of_transfers[w-1] <= 2 * aux[w] for w in gameweeks if w > 2), name='force_aux_1')
@@ -137,7 +140,7 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 	# Objectives
 	gw_xp = {w: so.expr_sum(points_player_week[p,w] * (lineup[p,w] + captain[p,w] + 0.1*vicecap[p,w]) for p in players) for w in gameweeks}
 	gw_bench_xp = {w: so.expr_sum(bench[p,w,l] * bench_weights[l] for l in priority) for p in players for w in gameweeks}
-	gw_itbFT = {w: (in_the_bank[w]*ITBmult + free_transfers[w]*FTmult) for w in gameweeks}	
+	gw_itbFT = {w: (in_the_bank[w]*ITBmult + free_transfers[w]*FTmult) for w in gameweeks}  
 	gw_total = {w: gw_xp[w] + gw_bench_xp[w] - 4 * penalized_transfers[w] + gw_itbFT[w] for w in gameweeks}
 
 	if objective == 'regular':
@@ -197,17 +200,17 @@ def solve_multi_period_pre_season_fpl(horizon, objective='regular', decay_base=0
 
 if __name__ == '__main__':
 	
-	r = solve_multi_period_pre_season_fpl(horizon=5, objective='regular', ITBmult=0.2, FTmult=1.6)
+	r = solve_multi_period_pre_season_fpl(horizon=5, objective='regular', ITBmult=0.1, FTmult=1.6)
 	print(r['picks'])
 	print(r['summary'])
 	r['picks'].to_csv('optimal_plan_regular.csv')
 	
-	r = solve_multi_period_pre_season_fpl(horizon=5, objective='decay', decay_base=0.80, ITBmult=0.2, FTmult=1.6)
+	r = solve_multi_period_pre_season_fpl(horizon=5, objective='decay', decay_base=0.80, ITBmult=0.1, FTmult=1.6)
 	print(r['picks'])
 	print(r['summary'])
 	r['picks'].to_csv('optimal_plan_decay.csv')
 
-	r = solve_multi_period_pre_season_fpl(horizon=5, objective='decay', decay_base=0.80, no_transfer=True, ITBmult=0.2, FTmult=1.6)
+	r = solve_multi_period_pre_season_fpl(horizon=5, objective='decay', decay_base=0.80, no_transfer=True, ITBmult=0.1, FTmult=1.6)
 	print(r['picks'])
 	print(r['summary'])
 	r['picks'].to_csv('optimal_plan_decay_no_transfer.csv')
